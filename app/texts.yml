@@ -4,7 +4,7 @@ buttons:
   main_menu: "🏠 Главное меню"
 
 main_menu:
-  title: "📚 Педагог на автопилоте"
+  title: "📚 Яна Александровна | Твоя физичка"
   image: "static/menu/IMG_9353 2.jpg"
   buttons:
     projects: "📖 Мои материалы"
