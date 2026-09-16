@@ -1,0 +1,8 @@
+{
+  "packages": {
+    "python": "3.12",
+    "gcc": "latest",
+    "python3-dev": "latest",
+    "libffi-dev": "latest"
+  }
+}
