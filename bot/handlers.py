@@ -1,16 +1,35 @@
 import logging
 logger = logging.getLogger("shopbot")
+
+import contextlib
+from pathlib import Path
+
 from aiogram import Router, F
 from aiogram.filters import StateFilter
-from aiogram.types import Message, CallbackQuery, InputMediaPhoto, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
-from pathlib import Path
-import contextlib
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InputMediaPhoto,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select, func
 
 from app.utils.texts import load_texts
-from .keyboards import main_menu_kb, back_kb, item_card_kb, payment_method_kb, items_list_kb, main_menu_only_kb, payment_link_kb, donate_amounts_kb, admin_menu_kb
+from .keyboards import (
+    main_menu_kb,
+    back_kb,
+    item_card_kb,
+    payment_method_kb,
+    items_list_kb,
+    main_menu_only_kb,
+    payment_link_kb,
+    donate_amounts_kb,
+    admin_menu_kb,
+)
 from app.db.session import AsyncSessionLocal
 from app.models import Item, ItemType, User, Purchase
 from app.config import settings
@@ -70,7 +89,6 @@ async def start_handler(message: Message) -> None:
                 u.username = message.from_user.username or None
         await db.commit()
 
-    # Отправляем главное меню с картинкой если есть
     try:
         if "image" in texts["main_menu"]:
             photo = FSInputFile(texts["main_menu"]["image"])
@@ -81,22 +99,26 @@ async def start_handler(message: Message) -> None:
                 reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(message.from_user.id, message.from_user.username))
             )
         else:
-            await message.answer(texts["main_menu"]["title"], parse_mode="Markdown", reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(message.from_user.id, message.from_user.username)))
+            await message.answer(
+                texts["main_menu"]["title"],
+                parse_mode="Markdown",
+                reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(message.from_user.id, message.from_user.username))
+            )
     except FileNotFoundError:
-        # Если файл не найден, отправляем без картинки
-        await message.answer(texts["main_menu"]["title"], reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(message.from_user.id, message.from_user.username)))
+        await message.answer(
+            texts["main_menu"]["title"],
+            reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(message.from_user.id, message.from_user.username))
+        )
 
 
 @router.message(F.text.startswith("/"))
 async def quick_menu_commands(message: Message) -> None:
     cmd = (message.text or "").strip().lstrip("/").lower()
+
     if cmd == "projects":
         await list_items(message, ItemType.DIGITAL, section="projects", page=1)
         return
-    # Солобот модули удалены
-    if cmd == "services":
-        await list_items(message, ItemType.SERVICE, section="services", page=1)
-        return
+
     if cmd in ("buylist", "purchased", "my"):
         texts = load_texts()
         async with AsyncSessionLocal() as db:
@@ -122,6 +144,7 @@ async def quick_menu_commands(message: Message) -> None:
         else:
             await message.answer(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
         return
+
     if cmd in ("donat", "donate"):
         texts = load_texts()
         donate_image = texts.get("donate", {}).get("image")
@@ -134,16 +157,14 @@ async def quick_menu_commands(message: Message) -> None:
         return
 
 
-# Новый обработчик для inline-кнопок главного меню
 @router.callback_query(F.data.startswith("menu:"))
 async def main_menu_callback(call: CallbackQuery) -> None:
     texts = load_texts()
     data = call.data.split(":", 1)[1]
 
-    # Маппинг для определения типа элементов и секции
+    # Только "projects" (цифровые товары). Услуги отключены.
     section_mapping = {
         "projects": (ItemType.DIGITAL, "projects"),
-        "services": (ItemType.SERVICE, "services"),
     }
 
     if data in section_mapping:
@@ -151,8 +172,8 @@ async def main_menu_callback(call: CallbackQuery) -> None:
         await list_items(call.message, item_type, section=section, call=call, page=1)
         await call.answer()
         return
+
     if data == "admin":
-        # Доступ только администратору
         if not _is_admin_user(call.from_user.id, call.from_user.username):
             await call.answer("Недоступно", show_alert=True)
             return
@@ -168,7 +189,6 @@ async def main_menu_callback(call: CallbackQuery) -> None:
                 await call.message.delete()
         await call.answer()
         return
-
 
     if data == "donate":
         donate_image = load_texts().get("donate", {}).get("image")
@@ -197,20 +217,6 @@ async def main_menu_callback(call: CallbackQuery) -> None:
         await call.answer()
         return
 
-    # Пагинация списков через callback вида list:<type>:<page>
-    if data.startswith("list:"):
-        _, type_str, page_str = data.split(":", 2)
-        page_num = int(page_str) if page_str.isdigit() else 1
-        mapping = {
-            "digital": (ItemType.DIGITAL, "projects"),
-            "service": (ItemType.SERVICE, "services"),
-        }
-        if type_str in mapping:
-            itype, section = mapping[type_str]
-            await list_items(call.message, itype, section=section, call=call, page=page_num)
-        await call.answer()
-        return
-
     if data == "purchased":
         async with AsyncSessionLocal() as db:
             user = (await db.execute(select(User).where(User.tg_id == call.from_user.id))).scalar_one_or_none()
@@ -222,10 +228,8 @@ async def main_menu_callback(call: CallbackQuery) -> None:
             if not purchases:
                 await call.answer(empty_text, show_alert=True)
                 return
-            # Получаем товары по id
             item_ids = [p.item_id for p in purchases if p.item_id is not None]
             items = (await db.execute(select(Item).where(Item.id.in_(item_ids)))).scalars().all()
-            # Формируем клавиатуру
             kb = []
             for item in items:
                 kb.append([InlineKeyboardButton(text=item.title, callback_data=f"item:{item.id}:{item.item_type.value}")])
@@ -258,7 +262,6 @@ async def main_menu_callback(call: CallbackQuery) -> None:
         return
 
 
-# Пагинация списков (стрелки), когда callback не начинается с "menu:"
 @router.callback_query(F.data.startswith("list:"))
 async def list_pagination(call: CallbackQuery) -> None:
     try:
@@ -267,9 +270,9 @@ async def list_pagination(call: CallbackQuery) -> None:
     except Exception:
         page_num = 1
         type_str = "digital"
+
     mapping = {
         "digital": (ItemType.DIGITAL, "projects"),
-        "service": (ItemType.SERVICE, "services"),
     }
     if type_str in mapping:
         itype, section = mapping[type_str]
@@ -294,7 +297,6 @@ async def cb_buy_one(call: CallbackQuery, state: FSMContext) -> None:
             try:
                 await call.message.edit_reply_markup(reply_markup=payment_link_kb(url))
             except Exception:
-                # Фолбэк: пытаемся отредактировать подпись/текст, иначе отправим новое сообщение
                 try:
                     if call.message.photo:
                         await call.message.edit_caption(caption="Перейдите к оплате:", reply_markup=payment_link_kb(url))
@@ -302,8 +304,9 @@ async def cb_buy_one(call: CallbackQuery, state: FSMContext) -> None:
                         await call.message.edit_text("Перейдите к оплате:", reply_markup=payment_link_kb(url))
                 except Exception:
                     await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
-        except Exception:
-            await call.message.answer("Не удалось создать заказ. Попробуйте позже.")
+        except Exception as e:
+            logger.error("Ошибка при создании заказа для item_id=%s: %s", item_id_int, e, exc_info=True)
+            await call.message.answer(f"Не удалось создать заказ: {e}")
     await call.answer()
 
 
@@ -324,8 +327,9 @@ async def cb_buy_direct(call: CallbackQuery, state: FSMContext) -> None:
                         await call.message.edit_text("Перейдите к оплате:", reply_markup=payment_link_kb(url))
                 except Exception:
                     await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
-        except Exception:
-            await call.message.answer("Не удалось создать заказ. Попробуйте позже.")
+        except Exception as e:
+            logger.error("Ошибка при создании заказа для item_id=%s: %s", item_id_int, e, exc_info=True)
+            await call.message.answer(f"Не удалось создать заказ: {e}")
     await call.answer()
 
 
@@ -336,24 +340,21 @@ async def cb_back(call: CallbackQuery) -> None:
     item_type = parts[2] if len(parts) > 2 else None
     page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
     texts = load_texts()
-    
+
     if action == "list" and item_type:
-        # Преобразуем строковый тип в ItemType
         item_type_mapping = {
             "digital": ItemType.DIGITAL,
-            "service": ItemType.SERVICE,
         }
         section_mapping = {
             "digital": "projects",
-            "service": "services",
         }
         item_type_enum = item_type_mapping.get(item_type)
         if item_type_enum:
             await list_items(call.message, item_type_enum, section=section_mapping[item_type], call=call, page=page)
             await call.answer()
             return
+
     if action == "purchased":
-        # Вернуться в список купленных
         async with AsyncSessionLocal() as db:
             user = (await db.execute(select(User).where(User.tg_id == call.from_user.id))).scalar_one_or_none()
             if not user:
@@ -391,7 +392,7 @@ async def cb_back(call: CallbackQuery) -> None:
                     await call.message.delete()
             await call.answer()
             return
-    
+
     # Default: return to main menu
     try:
         if "image" in texts["main_menu"]:
@@ -405,24 +406,17 @@ async def cb_back(call: CallbackQuery) -> None:
                 reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username))
             )
         else:
-            await call.message.edit_text(texts["main_menu"]["title"], parse_mode="Markdown", reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username)))
+            await call.message.edit_text(
+                texts["main_menu"]["title"],
+                parse_mode="Markdown",
+                reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username))
+            )
     except FileNotFoundError:
-        await call.message.edit_text(texts["main_menu"]["title"], parse_mode="Markdown", reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username)))
-        try:
-            if "image" in texts["main_menu"]:
-                photo = FSInputFile(texts["main_menu"]["image"])
-                await call.message.answer_photo(
-                    photo=photo,
-                    caption=texts["main_menu"]["title"],
-                    parse_mode="Markdown",
-                    reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username))
-                )
-                await call.message.delete()
-            else:
-                await call.message.edit_text(texts["main_menu"]["title"], parse_mode="Markdown", reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username)))
-        except FileNotFoundError:
-            await call.message.edit_text(texts["main_menu"]["title"], parse_mode="Markdown", reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username)))
-    
+        await call.message.edit_text(
+            texts["main_menu"]["title"],
+            parse_mode="Markdown",
+            reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username))
+        )
     await call.answer()
 
 
@@ -469,7 +463,6 @@ async def admin_invoice_capture_amount(message: Message, state: FSMContext) -> N
     amount_minor = int(text_val) * 100
     data = await state.get_data()
     description = data.get("invoice_desc") or "Счёт от администратора"
-    # Создаем платёж через ЮKassa
     client = YooKassaClient()
     import uuid
     idem = str(uuid.uuid4())
@@ -506,7 +499,6 @@ async def show_item(call: CallbackQuery) -> None:
     logger.info("Карточка товара: callback получен, item_id=%s, type=%s", item_id, item_type)
     async with AsyncSessionLocal() as db:
         item = (await db.execute(select(Item).where(Item.id == int(item_id)))).scalar_one_or_none()
-        # Проверим, куплен ли уже товар пользователем
         purchased = False
         try:
             user = (await db.execute(select(User).where(User.tg_id == call.from_user.id))).scalar_one_or_none()
@@ -527,9 +519,7 @@ async def show_item(call: CallbackQuery) -> None:
         )
         logger.info("Показываем карточку: %s (id=%s, type=%s)", item.title, item.id, item.item_type)
         try:
-            # Определяем тип исходного сообщения
             if call.message.photo:
-                # Было фото — попробуем заменить картинку корректным источником или дефолтом
                 media_source = None
                 if item.image_file_id:
                     if item.image_file_id.startswith("http") or item.image_file_id.startswith("AgAC"):
@@ -538,7 +528,6 @@ async def show_item(call: CallbackQuery) -> None:
                         media_source = FSInputFile(item.image_file_id)
 
                 if not media_source:
-                    # Фолбэк: дефолтные изображения по типу товара
                     texts = load_texts()
                     defaults = texts.get("defaults", {}).get("images", {})
                     key = {
@@ -556,19 +545,25 @@ async def show_item(call: CallbackQuery) -> None:
                             caption=caption,
                             parse_mode="Markdown"
                         ),
-                        reply_markup=item_card_kb(item.id, item_type, purchased, from_purchased=(call.message.caption and "Ваши купленные проекты:" in call.message.caption), page=page_from)
+                        reply_markup=item_card_kb(
+                            item.id, item_type, purchased,
+                            from_purchased=(call.message.caption and "Ваши купленные проекты:" in call.message.caption),
+                            page=page_from
+                        )
                     )
                     logger.info("Карточка показана (edit_media), id=%s", item.id)
                 else:
-                    # Если не удалось определить изображение — обновим только подпись
                     await call.message.edit_caption(
                         caption=caption,
                         parse_mode="Markdown",
-                        reply_markup=item_card_kb(item.id, item_type, purchased, from_purchased=(call.message.caption and "Ваши купленные проекты:" in call.message.caption), page=page_from)
+                        reply_markup=item_card_kb(
+                            item.id, item_type, purchased,
+                            from_purchased=(call.message.caption and "Ваши купленные проекты:" in call.message.caption),
+                            page=page_from
+                        )
                     )
                     logger.info("Карточка показана (edit_caption без изображения), id=%s", item.id)
             else:
-                # Был текст — используем edit_text
                 await call.message.edit_text(
                     text=caption,
                     parse_mode="Markdown",
@@ -576,7 +571,7 @@ async def show_item(call: CallbackQuery) -> None:
                 )
                 logger.info("Карточка показана (edit_text), id=%s", item.id)
         except Exception as e:
-            logger.error(f"Ошибка при показе карточки товара: {e}")
+            logger.error(f"Ошибка при показе карточки товара: {e}", exc_info=True)
             await call.answer("Ошибка при показе карточки товара", show_alert=True)
         await call.answer()
 
@@ -592,7 +587,6 @@ async def list_items(message: Message, item_type: ItemType, section: str = None,
         )).scalars().all()
         purchased_ids: set[int] = set()
         try:
-            # Получим список купленных пользователем товаров по users.id
             tg = message.chat.id if message else (call.from_user.id if call else None)
             if tg:
                 user = (await db.execute(select(User).where(User.tg_id == tg))).scalar_one_or_none()
@@ -603,6 +597,7 @@ async def list_items(message: Message, item_type: ItemType, section: str = None,
                     purchased_ids = set(int(x) for x in purchases if x)
         except Exception:
             purchased_ids = set()
+
     if not items:
         empty_key = {
             ItemType.DIGITAL: "items",
@@ -615,30 +610,28 @@ async def list_items(message: Message, item_type: ItemType, section: str = None,
         else:
             await message.answer(empty_text, reply_markup=back_kb("back:main"))
             return
+
     if section is None:
         section_mapping = {
             ItemType.DIGITAL: "projects",
             ItemType.SERVICE: "services",
         }
         section = section_mapping.get(item_type)
+
     description = texts["main_menu"]["section_descriptions"].get(section, "Список")
     image_path = texts["main_menu"].get("images", {}).get(section)
+
     try:
         if call:
-            if image_path:
+            if image_path and Path(image_path).is_file():
                 photo = FSInputFile(image_path)
                 try:
                     await call.message.edit_media(
-                        media=InputMediaPhoto(
-                            media=photo,
-                            caption=description,
-                        ),
+                        media=InputMediaPhoto(media=photo, caption=description),
                         reply_markup=items_list_kb(items, item_type.value, purchased_ids, page=page, total=total, page_size=page_size)
                     )
                 except TelegramBadRequest as e:
-                    if "message is not modified" in str(e):
-                        pass
-                    else:
+                    if "message is not modified" not in str(e):
                         raise
             else:
                 try:
@@ -647,12 +640,10 @@ async def list_items(message: Message, item_type: ItemType, section: str = None,
                         reply_markup=items_list_kb(items, item_type.value, purchased_ids, page=page, total=total, page_size=page_size)
                     )
                 except TelegramBadRequest as e:
-                    if "message is not modified" in str(e):
-                        pass
-                    else:
+                    if "message is not modified" not in str(e):
                         raise
         else:
-            if image_path:
+            if image_path and Path(image_path).is_file():
                 photo = FSInputFile(image_path)
                 await message.answer_photo(
                     photo=photo,
@@ -667,14 +658,18 @@ async def list_items(message: Message, item_type: ItemType, section: str = None,
     except FileNotFoundError:
         if call:
             try:
-                await call.message.edit_text(description, reply_markup=items_list_kb(items, item_type.value, page=page, total=total, page_size=page_size))
+                await call.message.edit_text(
+                    description,
+                    reply_markup=items_list_kb(items, item_type.value, purchased_ids, page=page, total=total, page_size=page_size)
+                )
             except TelegramBadRequest as e:
-                if "message is not modified" in str(e):
-                    pass
-                else:
+                if "message is not modified" not in str(e):
                     raise
         else:
-            await message.answer(description, reply_markup=items_list_kb(items, item_type.value, page=page, total=total, page_size=page_size))
+            await message.answer(
+                description,
+                reply_markup=items_list_kb(items, item_type.value, purchased_ids, page=page, total=total, page_size=page_size)
+            )
 
 
 @router.message(StateFilter(None))
@@ -688,7 +683,6 @@ async def fallback_message(message: Message) -> None:
 async def donate_set_amount(call: CallbackQuery) -> None:
     _, _, amount = call.data.split(":")
     amount_int = int(amount)
-    # Создаём донат сразу и показываем кнопку оплаты
     async with OrdersClient() as client:
         try:
             url = await client.create_order(None, call.from_user.id, amount_minor=amount_int * 100)
@@ -708,41 +702,10 @@ async def donate_set_amount(call: CallbackQuery) -> None:
                         await call.message.edit_text(text=thanks, reply_markup=payment_link_kb(url))
                 except Exception:
                     await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
-        except Exception:
-            await call.message.answer("Не удалось создать донат. Попробуйте позже.")
+        except Exception as e:
+            logger.error("Ошибка при создании доната: %s", e, exc_info=True)
+            await call.message.answer(f"Не удалось создать донат: {e}")
     await call.answer()
-
-
-@router.callback_query(F.data == "donate:custom")
-async def donate_custom_prompt(call: CallbackQuery, state: FSMContext) -> None:
-    donate_image = load_texts().get("donate", {}).get("image")
-    image_exists = bool(donate_image and Path(donate_image).is_file())
-    try:
-        if call.message.photo:
-            if image_exists:
-                photo = FSInputFile(donate_image)
-                await call.message.edit_media(
-                    media=InputMediaPhoto(media=photo, caption="Введите сумму в рублях:"),
-                    reply_markup=back_kb("menu:donate")
-                )
-            else:
-                await call.message.edit_caption(caption="Введите сумму в рублях:", reply_markup=back_kb("menu:donate"))
-        else:
-            if image_exists:
-                photo = FSInputFile(donate_image)
-                await call.message.answer_photo(photo=photo, caption="Введите сумму в рублях:", reply_markup=back_kb("menu:donate"))
-                await call.message.delete()
-            else:
-                await call.message.edit_text("Введите сумму в рублях:", reply_markup=back_kb("menu:donate"))
-    except Exception:
-        await call.message.answer("Введите сумму в рублях:", reply_markup=back_kb("menu:donate"))
-        with contextlib.suppress(Exception):
-            await call.message.delete()
-    await state.set_state(DonateStates.waiting_for_amount)
-    await call.answer()
-
-
-
 
 
 @router.callback_query(F.data == "donate:custom")
@@ -781,12 +744,12 @@ async def donate_custom_amount(message: Message, state: FSMContext) -> None:
         await message.answer("Некорректная сумма. Введите целое число больше 0.", reply_markup=back_kb("menu:donate"))
         return
     amount = int(text_val)
-    # Создаём донат и сразу отдаём кнопку оплаты
     async with OrdersClient() as client:
         try:
             url = await client.create_order(None, message.from_user.id, amount_minor=amount * 100)
             thanks = load_texts().get("donate", {}).get("thanks", "Спасибо за поддержку!")
             await message.answer(thanks, reply_markup=payment_link_kb(url))
-        except Exception:
-            await message.answer("Не удалось создать донат. Попробуйте позже.")
+        except Exception as e:
+            logger.error("Ошибка при создании доната (custom): %s", e, exc_info=True)
+            await message.answer(f"Не удалось создать донат: {e}")
     await state.clear()
