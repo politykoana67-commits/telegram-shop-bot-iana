@@ -162,7 +162,6 @@ async def main_menu_callback(call: CallbackQuery) -> None:
     texts = load_texts()
     data = call.data.split(":", 1)[1]
 
-    # Только "projects" (цифровые товары). Услуги отключены.
     section_mapping = {
         "projects": (ItemType.DIGITAL, "projects"),
     }
@@ -385,9 +384,10 @@ async def cb_back(call: CallbackQuery) -> None:
                         await call.message.answer_photo(photo=photo, caption=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
                         await call.message.delete()
                     else:
-                        await call.message.edit_text(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+                        await call.message.edit_text(text=title, reply_markup=InlineKeyboardMarkress(Exceptionup):
+(inline_keyboard=kb))
             except Exception:
-                await call.message.answer(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+                                       await call await call.message.answer(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
                 with contextlib.suppress(Exception):
                     await call.message.delete()
             await call.answer()
@@ -406,17 +406,29 @@ async def cb_back(call: CallbackQuery) -> None:
                 reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username))
             )
         else:
-            await call.message.edit_text(
-                texts["main_menu"]["title"],
-                parse_mode="Markdown",
+            if call.message.photo:
+                await call.message.edit_caption(
+                    caption=texts["main_menu"]["title"],
+                    parse_mode="Markdown",
+                    reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username))
+                )
+            else:
+                await call.message.edit_text(
+                    texts["main_menu"]["title"],
+                    parse_mode="Markdown",
+                    reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username))
+                )
+    except FileNotFoundError:
+        if call.message.photo:
+            await call.message.edit_caption(
+                caption=texts["main_menu"]["title"],
                 reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username))
             )
-    except FileNotFoundError:
-        await call.message.edit_text(
-            texts["main_menu"]["title"],
-            parse_mode="Markdown",
-            reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username))
-        )
+        else:
+            await call.message.edit_text(
+                texts["main_menu"]["title"],
+                reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username))
+            )
     await call.answer()
 
 
@@ -579,11 +591,12 @@ async def show_item(call: CallbackQuery) -> None:
 async def list_items(message: Message, item_type: ItemType, section: str = None, call: CallbackQuery = None, page: int = 1, page_size: int = 5) -> None:
     texts = load_texts()
     from aiogram.exceptions import TelegramBadRequest
+
     async with AsyncSessionLocal() as db:
         base_stmt = select(Item).where(Item.item_type == item_type, Item.is_visible == True)
         total = (await db.execute(select(func.count()).select_from(base_stmt.subquery()))).scalar_one()
         items = (await db.execute(
-            base_stmt.order_by(Item.id.desc()).offset((page-1)*page_size).limit(page_size)
+            base_stmt.order_by(Item.id.desc()).offset((page - 1) * page_size).limit(page_size)
         )).scalars().all()
         purchased_ids: set[int] = set()
         try:
@@ -620,56 +633,59 @@ async def list_items(message: Message, item_type: ItemType, section: str = None,
 
     description = texts["main_menu"]["section_descriptions"].get(section, "Список")
     image_path = texts["main_menu"].get("images", {}).get(section)
+    has_image = bool(image_path and Path(image_path).is_file())
+
+    kb = items_list_kb(items, item_type.value, purchased_ids, page=page, total=total, page_size=page_size)
 
     try:
         if call:
-            if image_path and Path(image_path).is_file():
+            is_photo_message = bool(call.message.photo)
+
+            if has_image:
                 photo = FSInputFile(image_path)
-                try:
-                    await call.message.edit_media(
-                        media=InputMediaPhoto(media=photo, caption=description),
-                        reply_markup=items_list_kb(items, item_type.value, purchased_ids, page=page, total=total, page_size=page_size)
-                    )
-                except TelegramBadRequest as e:
-                    if "message is not modified" not in str(e):
-                        raise
+                if is_photo_message:
+                    try:
+                        await call.message.edit_media(
+                            media=InputMediaPhoto(media=photo, caption=description),
+                            reply_markup=kb
+                        )
+                    except TelegramBadRequest as e:
+                        if "message is not modified" not in str(e):
+                            raise
+                else:
+                    await call.message.answer_photo(photo=photo, caption=description, reply_markup=kb)
+                    with contextlib.supp.message.delete()
             else:
-                try:
-                    await call.message.edit_text(
-                        text=description,
-                        reply_markup=items_list_kb(items, item_type.value, purchased_ids, page=page, total=total, page_size=page_size)
-                    )
-                except TelegramBadRequest as e:
-                    if "message is not modified" not in str(e):
-                        raise
+                if is_photo_message:
+                    try:
+                        await call.message.edit_caption(caption=description, reply_markup=kb)
+                    except TelegramBadRequest as e:
+                        if "message is not modified" not in str(e):
+                            raise
+                else:
+                    try:
+                        await call.message.edit_text(text=description, reply_markup=kb)
+                    except TelegramBadRequest as e:
+                        if "message is not modified" not in str(e):
+                            raise
         else:
-            if image_path and Path(image_path).is_file():
+            if has_image:
                 photo = FSInputFile(image_path)
-                await message.answer_photo(
-                    photo=photo,
-                    caption=description,
-                    reply_markup=items_list_kb(items, item_type.value, purchased_ids, page=page, total=total, page_size=page_size)
-                )
+                await message.answer_photo(photo=photo, caption=description, reply_markup=kb)
             else:
-                await message.answer(
-                    text=description,
-                    reply_markup=items_list_kb(items, item_type.value, purchased_ids, page=page, total=total, page_size=page_size)
-                )
+                await message.answer(text=description, reply_markup=kb)
     except FileNotFoundError:
         if call:
             try:
-                await call.message.edit_text(
-                    description,
-                    reply_markup=items_list_kb(items, item_type.value, purchased_ids, page=page, total=total, page_size=page_size)
-                )
+                if call.message.photo:
+                    await call.message.edit_caption(caption=description, reply_markup=kb)
+                else:
+                    await call.message.edit_text(text=description, reply_markup=kb)
             except TelegramBadRequest as e:
                 if "message is not modified" not in str(e):
                     raise
         else:
-            await message.answer(
-                description,
-                reply_markup=items_list_kb(items, item_type.value, purchased_ids, page=page, total=total, page_size=page_size)
-            )
+            await message.answer(text=description, reply_markup=kb)
 
 
 @router.message(StateFilter(None))
