@@ -13,19 +13,11 @@ main_menu:
     donate: "💛 Поддержать автора"
     contact: "💬 Связаться"
     admin: "🛠 Администрирование"
-  images:
-    projects: "static/menu/projects.png"
-    services: "static/menu/services.png"
-    purchased: "static/menu/main.jpg"
+
   section_descriptions:
     projects: "📖 Готовые материалы для учителей и преподавателей"
     services: "🛍 Выберите материал и оплатите — файл придёт сразу после оплаты"
     purchased: "📦 Все ваши покупки — здесь. Скачать можно в любой момент"
-
-defaults:
-  images:
-    service: "static/menu/services.png"
-    digital: "static/menu/projects.png"
 
 payment:
   title: "Оплата"
@@ -43,7 +35,6 @@ empty:
 
 donate:
   title: "Поддержать автора"
-  image: "static/menu/donate.jpg"
   buttons:
     back: "⬅ Назад"
   thanks: "Спасибо! Ваша поддержка помогает создавать новые материалы 💛"
