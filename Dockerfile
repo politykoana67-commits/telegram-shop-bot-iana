@@ -17,6 +17,7 @@ RUN pip install -r requirements.txt
 
 # Copy project
 COPY . .
+RUN mkdir -p uploads
 
 # Entrypoint runs migrations then launches API
 COPY docker-entrypoint.sh /entrypoint.sh
