@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.db.session import get_db_session
-from app.models import Item, Order, PaymentMethod, User, OrderStatus, Purchase  # <-- Добавлен Purchase
+from app.models import Item, Order, PaymentMethod, User, OrderStatus, Purchase  # <-- Убедитесь, что Purchase импортирован
 from app.schemas.orders import CreateOrderRequest, CreateOrderResponse
 from app.services.yookassa import YooKassaClient
 from app.config import settings
@@ -73,10 +73,15 @@ async def create_order(payload: CreateOrderRequest, db: AsyncSession = Depends(g
         order.status = OrderStatus.PAID 
         await db.flush() # Чтобы получить order.id
         
-        # Создаем запись о покупке, чтобы товар появился в разделе "Мои покупки"
-        # ВАЖНО: Убедитесь, что в вашей модели Purchase есть поля user_id и item_id. 
-        # Если есть другие обязательные поля (например, price), добавьте их сюда.
-        purchase = Purchase(user_id=user_id, item_id=item.id)
+        # Создаем запись о покупке
+        # ИСПРАВЛЕНИЕ: Передаем order_id=order.id. 
+        # Также добавим delivery_info="" на случай, если это поле обязательное в вашей БД.
+        purchase = Purchase(
+            order_id=order.id,  # <-- Ключевое исправление ошибки 500
+            user_id=user_id, 
+            item_id=item.id,
+            delivery_info=""    # <-- На случай, если поле NOT NULL
+        )
         db.add(purchase)
         await db.commit()
         
@@ -111,7 +116,6 @@ async def create_order(payload: CreateOrderRequest, db: AsyncSession = Depends(g
         )
     except Exception as e:
         logger.bind(event="yk.create_payment.error", error=str(e)).error("Ошибка запроса к ЮKassa")
-        # Возвращаем 400, чтобы бот показал понятную ошибку, а не 502
         raise HTTPException(status_code=400, detail=f"Ошибка платежной системы: {str(e)}")
     
     try:
