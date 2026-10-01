@@ -16,6 +16,7 @@ from aiogram.types import (
 )
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
+from aiogram.exceptions import TelegramBadRequest  # <-- Добавлен импорт для обработки ошибок
 from sqlalchemy import select, func
 
 from app.utils.texts import load_texts
@@ -182,6 +183,11 @@ async def main_menu_callback(call: CallbackQuery) -> None:
                 await call.message.edit_caption(caption=admin_text, reply_markup=admin_menu_kb())
             else:
                 await call.message.edit_text(text=admin_text, reply_markup=admin_menu_kb())
+        except TelegramBadRequest as e:
+            if "message is not modified" not in str(e):
+                await call.message.answer(admin_text, reply_markup=admin_menu_kb())
+                with contextlib.suppress(Exception):
+                    await call.message.delete()
         except Exception:
             await call.message.answer(admin_text, reply_markup=admin_menu_kb())
             with contextlib.suppress(Exception):
@@ -209,6 +215,11 @@ async def main_menu_callback(call: CallbackQuery) -> None:
                     await call.message.delete()
                 else:
                     await call.message.edit_text(text="Выберите сумму доната:", reply_markup=donate_amounts_kb())
+        except TelegramBadRequest as e:
+            if "message is not modified" not in str(e):
+                await call.message.answer(text="Выберите сумму доната:", reply_markup=donate_amounts_kb())
+                with contextlib.suppress(Exception):
+                    await call.message.delete()
         except Exception:
             await call.message.answer(text="Выберите сумму доната:", reply_markup=donate_amounts_kb())
             with contextlib.suppress(Exception):
@@ -253,6 +264,11 @@ async def main_menu_callback(call: CallbackQuery) -> None:
                         await call.message.delete()
                     else:
                         await call.message.edit_text(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+            except TelegramBadRequest as e:
+                if "message is not modified" not in str(e):
+                    await call.message.answer(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+                    with contextlib.suppress(Exception):
+                        await call.message.delete()
             except Exception:
                 await call.message.answer(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
                 with contextlib.suppress(Exception):
@@ -288,48 +304,87 @@ async def cb_buy(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("buy_one:"))
 async def cb_buy_one(call: CallbackQuery, state: FSMContext) -> None:
+    await call.answer() # <-- ВАЖНО: Сразу подтверждаем нажатие, чтобы не было ошибки "query is too old"
+    
     _, item_id = call.data.split(":")
     item_id_int = int(item_id)
+    
     async with OrdersClient() as client:
         try:
             url = await client.create_order(item_id_int, call.from_user.id)
+            
+            # ====== ОБРАБОТКА БЕСПЛАТНОГО ТОВАРА ======
+            if url is None:
+                # Бэкенд вернул None, значит товар бесплатный
+                # TODO: Здесь нужно получить файл из базы и отправить его пользователю.
+                # Примерная логика (раскомментируйте и адаптируйте под вашу модель Item):
+                # async with AsyncSessionLocal() as db:
+                #     item = (await db.execute(select(Item).where(Item.id == item_id_int))).scalar_one_or_none()
+                #     if item and item.file_id:
+                #         await call.message.answer_document(item.file_id, caption="Ваш бесплатный файл!")
+                #     elif item and item.file_path:
+                #         await call.message.answer_document(FSInputFile(item.file_path), caption="Ваш бесплатный файл!")
+                
+                await call.message.answer("✅ Бесплатный товар успешно оформлен! (Здесь должна быть отправка файла)")
+                await call.answer("Заказ оформлен!", show_alert=True)
+                return
+            # ==========================================
+
+            # Платный товар - показываем ссылку
             try:
                 await call.message.edit_reply_markup(reply_markup=payment_link_kb(url))
+            except TelegramBadRequest as e:
+                if "message is not modified" not in str(e):
+                    try:
+                        if call.message.photo:
+                            await call.message.edit_caption(caption="Перейдите к оплате:", reply_markup=payment_link_kb(url))
+                        else:
+                            await call.message.edit_text("Перейдите к оплате:", reply_markup=payment_link_kb(url))
+                    except Exception:
+                        await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
             except Exception:
-                try:
-                    if call.message.photo:
-                        await call.message.edit_caption(caption="Перейдите к оплате:", reply_markup=payment_link_kb(url))
-                    else:
-                        await call.message.edit_text("Перейдите к оплате:", reply_markup=payment_link_kb(url))
-                except Exception:
-                    await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
+                await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
         except Exception as e:
             logger.error("Ошибка при создании заказа для item_id=%s: %s", item_id_int, e, exc_info=True)
             await call.message.answer(f"Не удалось создать заказ: {e}")
-    await call.answer()
 
 
 @router.callback_query(F.data.startswith("buy_direct:"))
 async def cb_buy_direct(call: CallbackQuery, state: FSMContext) -> None:
+    await call.answer() # <-- ВАЖНО: Сразу подтверждаем нажатие
+    
     _, item_id, _ = call.data.split(":")
     item_id_int = int(item_id)
+    
     async with OrdersClient() as client:
         try:
             url = await client.create_order(item_id_int, call.from_user.id)
+            
+            # ====== ОБРАБОТКА БЕСПЛАТНОГО ТОВАРА ======
+            if url is None:
+                # TODO: Аналогично cb_buy_one, здесь нужно отправить файл
+                await call.message.answer("✅ Бесплатный товар успешно оформлен! (Здесь должна быть отправка файла)")
+                await call.answer("Заказ оформлен!", show_alert=True)
+                return
+            # ==========================================
+
+            # Платный товар - показываем ссылку
             try:
                 await call.message.edit_reply_markup(reply_markup=payment_link_kb(url))
+            except TelegramBadRequest as e:
+                if "message is not modified" not in str(e):
+                    try:
+                        if call.message.photo:
+                            await call.message.edit_caption(caption="Перейдите к оплате:", reply_markup=payment_link_kb(url))
+                        else:
+                            await call.message.edit_text("Перейдите к оплате:", reply_markup=payment_link_kb(url))
+                    except Exception:
+                        await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
             except Exception:
-                try:
-                    if call.message.photo:
-                        await call.message.edit_caption(caption="Перейдите к оплате:", reply_markup=payment_link_kb(url))
-                    else:
-                        await call.message.edit_text("Перейдите к оплате:", reply_markup=payment_link_kb(url))
-                except Exception:
-                    await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
+                await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
         except Exception as e:
             logger.error("Ошибка при создании заказа для item_id=%s: %s", item_id_int, e, exc_info=True)
             await call.message.answer(f"Не удалось создать заказ: {e}")
-    await call.answer()
 
 
 @router.callback_query(F.data.startswith("back:"))
@@ -385,6 +440,11 @@ async def cb_back(call: CallbackQuery) -> None:
                         await call.message.delete()
                     else:
                         await call.message.edit_text(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+            except TelegramBadRequest as e:
+                if "message is not modified" not in str(e):
+                    await call.message.answer(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+                    with contextlib.suppress(Exception):
+                        await call.message.delete()
             except Exception:
                 await call.message.answer(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
                 with contextlib.suppress(Exception):
@@ -417,6 +477,18 @@ async def cb_back(call: CallbackQuery) -> None:
                     parse_mode="Markdown",
                     reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username))
                 )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            if call.message.photo:
+                await call.message.edit_caption(
+                    caption=texts["main_menu"]["title"],
+                    reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username))
+                )
+            else:
+                await call.message.edit_text(
+                    texts["main_menu"]["title"],
+                    reply_markup=main_menu_kb(texts, is_admin=_is_admin_user(call.from_user.id, call.from_user.username))
+                )
     except FileNotFoundError:
         if call.message.photo:
             await call.message.edit_caption(
@@ -442,6 +514,10 @@ async def admin_create_invoice_start(call: CallbackQuery, state: FSMContext) -> 
             await call.message.edit_caption(caption=prompt, reply_markup=back_kb("menu:admin"))
         else:
             await call.message.edit_text(text=prompt, reply_markup=back_kb("menu:admin"))
+    except TelegramBadRequest:
+        await call.message.answer(prompt, reply_markup=back_kb("menu:admin"))
+        with contextlib.suppress(Exception):
+            await call.message.delete()
     except Exception:
         await call.message.answer(prompt, reply_markup=back_kb("menu:admin"))
         with contextlib.suppress(Exception):
@@ -581,6 +657,12 @@ async def show_item(call: CallbackQuery) -> None:
                     reply_markup=item_card_kb(item.id, item_type, purchased, from_purchased=False, page=page_from)
                 )
                 logger.info("Карточка показана (edit_text), id=%s", item.id)
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                pass # Игнорируем, если сообщение не изменилось
+            else:
+                logger.error(f"Ошибка при показе карточки товара: {e}", exc_info=True)
+                await call.answer("Ошибка при показе карточки товара", show_alert=True)
         except Exception as e:
             logger.error(f"Ошибка при показе карточки товара: {e}", exc_info=True)
             await call.answer("Ошибка при показе карточки товара", show_alert=True)
@@ -709,15 +791,16 @@ async def donate_set_amount(call: CallbackQuery) -> None:
                     await call.message.edit_caption(caption=thanks, reply_markup=payment_link_kb(url))
                 else:
                     await call.message.edit_text(text=thanks, reply_markup=payment_link_kb(url))
-            except Exception:
-                try:
-                    thanks = load_texts().get("donate", {}).get("thanks", "Спасибо за поддержку!")
-                    if call.message.photo:
-                        await call.message.edit_caption(caption=thanks, reply_markup=payment_link_kb(url))
-                    else:
-                        await call.message.edit_text(text=thanks, reply_markup=payment_link_kb(url))
-                except Exception:
-                    await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
+            except TelegramBadRequest as e:
+                if "message is not modified" not in str(e):
+                    try:
+                        thanks = load_texts().get("donate", {}).get("thanks", "Спасибо за поддержку!")
+                        if call.message.photo:
+                            await call.message.edit_caption(caption=thanks, reply_markup=payment_link_kb(url))
+                        else:
+                            await call.message.edit_text(text=thanks, reply_markup=payment_link_kb(url))
+                    except Exception:
+                        await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
         except Exception as e:
             logger.error("Ошибка при создании доната: %s", e, exc_info=True)
             await call.message.answer(f"Не удалось создать донат: {e}")
@@ -745,6 +828,11 @@ async def donate_custom_prompt(call: CallbackQuery, state: FSMContext) -> None:
                 await call.message.delete()
             else:
                 await call.message.edit_text("Введите сумму в рублях:", reply_markup=back_kb("menu:donate"))
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            await call.message.answer("Введите сумму в рублях:", reply_markup=back_kb("menu:donate"))
+            with contextlib.suppress(Exception):
+                await call.message.delete()
     except Exception:
         await call.message.answer("Введите сумму в рублях:", reply_markup=back_kb("menu:donate"))
         with contextlib.suppress(Exception):
