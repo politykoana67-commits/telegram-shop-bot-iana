@@ -16,7 +16,7 @@ from aiogram.types import (
 )
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from aiogram.exceptions import TelegramBadRequest  # <-- Добавлен импорт для обработки ошибок
+from aiogram.exceptions import TelegramBadRequest  # Для обработки ошибок Telegram
 from sqlalchemy import select, func
 
 from app.utils.texts import load_texts
@@ -32,7 +32,7 @@ from .keyboards import (
     admin_menu_kb,
 )
 from app.db.session import AsyncSessionLocal
-from app.models import Item, ItemType, User, Purchase
+from app.models import Item, ItemType, User, Purchase, ItemCode  # Добавлен ItemCode
 from app.config import settings
 from app.services.orders_client import OrdersClient
 from app.services.yookassa import YooKassaClient
@@ -270,7 +270,7 @@ async def main_menu_callback(call: CallbackQuery) -> None:
                     with contextlib.suppress(Exception):
                         await call.message.delete()
             except Exception:
-                await call.message.answer(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+                await call.message.answer_re(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
                 with contextlib.suppress(Exception):
                     await call.message.delete()
             await call.answer()
@@ -298,13 +298,13 @@ async def list_pagination(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("buy:"))
 async def cb_buy(call: CallbackQuery) -> None:
     _, item_id = call.data.split(":", 1)
-    await call.message.edit_reply_markup(reply_markup=payment_method_kb(int(item_id)))
+    await call.message.editply_markup(reply_markup=payment_method_kb(int(item_id)))
     await call.answer()
 
 
 @router.callback_query(F.data.startswith("buy_one:"))
 async def cb_buy_one(call: CallbackQuery, state: FSMContext) -> None:
-    await call.answer() # <-- ВАЖНО: Сразу подтверждаем нажатие, чтобы не было ошибки "query is too old"
+    await call.answer() # Сразу подтверждаем нажатие кнопки
     
     _, item_id = call.data.split(":")
     item_id_int = int(item_id)
@@ -315,35 +315,61 @@ async def cb_buy_one(call: CallbackQuery, state: FSMContext) -> None:
             
             # ====== ОБРАБОТКА БЕСПЛАТНОГО ТОВАРА ======
             if url is None:
-                # Бэкенд вернул None, значит товар бесплатный
-                # TODO: Здесь нужно получить файл из базы и отправить его пользователю.
-                # Примерная логика (раскомментируйте и адаптируйте под вашу модель Item):
-                # async with AsyncSessionLocal() as db:
-                #     item = (await db.execute(select(Item).where(Item.id == item_id_int))).scalar_one_or_none()
-                #     if item and item.file_id:
-                #         await call.message.answer_document(item.file_id, caption="Ваш бесплатный файл!")
-                #     elif item and item.file_path:
-                #         await call.message.answer_document(FSInputFile(item.file_path), caption="Ваш бесплатный файл!")
-                
-                await call.message.answer("✅ Бесплатный товар успешно оформлен! (Здесь должна быть отправка файла)")
+                async with AsyncSessionLocal() as db:
+                    # Получаем товар из базы
+                    item = (await db.execute(select(Item).where(Item.id == item_id_int))).scalar_one_or_none()
+                    
+                    if not item:
+                        await call.message.answer("❌ Ошибка: товар не найден в базе.")
+                        return
+
+                    # 1. Если это файл
+                    if item.delivery_type == "file" and item.digital_file_path:
+                        try:
+                            await call.message.answer_document(
+                                FSInputFile(item.digital_file_path), 
+                                caption=f"🎁 Ваш бесплатный файл: {item.title}"
+                            )
+                        except FileNotFoundError:
+                            await call.message.answer("❌ Файл не найден на сервере. Обратитесь к администратору.")
+                    
+                    # 2. Если это доступ к GitHub
+                    elif item.delivery_type == "github" and item.github_repo_read_grant:
+                        await call.message.answer(
+                            f"🎁 Ваш доступ к репозиторию: {item.github_repo_read_grant}\n\nНе забудьте принять приглашение в GitHub!"
+                        )
+                    
+                    # 3. Если это уникальный код (из таблицы ItemCode)
+                    else:
+                        code_record = (await db.execute(
+                            select(ItemCode).where(ItemCode.item_id == item.id, ItemCode.is_sold == False).limit(1)
+                        )).scalar_one_or_none()
+                        
+                        if code_record:
+                            code_record.is_sold = True
+                            await db.commit()
+                            await call.message.answer(f"🎁 Ваш код активации:\n`{code_record.code}`", parse_mode="Markdown")
+                        else:
+                            await call.message.answer("✅ Заказ оформлен, но файл/код временно отсутствует. Обратитесь в поддержку.")
+                            
                 await call.answer("Заказ оформлен!", show_alert=True)
-                return
             # ==========================================
 
             # Платный товар - показываем ссылку
-            try:
-                await call.message.edit_reply_markup(reply_markup=payment_link_kb(url))
-            except TelegramBadRequest as e:
-                if "message is not modified" not in str(e):
-                    try:
-                        if call.message.photo:
-                            await call.message.edit_caption(caption="Перейдите к оплате:", reply_markup=payment_link_kb(url))
-                        else:
-                            await call.message.edit_text("Перейдите к оплате:", reply_markup=payment_link_kb(url))
-                    except Exception:
-                        await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
-            except Exception:
-                await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
+            else:
+                try:
+                    await call.message.edit_reply_markup(reply_markup=payment_link_kb(url))
+                except TelegramBadRequest as e:
+                    if "message is not modified" not in str(e):
+                        try:
+                            if call.message.photo:
+                                await call.message.edit_caption(caption="Перейдите к оплате:", reply_markup=payment_link_kb(url))
+                            else:
+                                await call.message.edit_text("Перейдите к оплате:", reply_markup=payment_link_kb(url))
+                        except Exception:
+                            await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
+                except Exception:
+                    await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
         except Exception as e:
             logger.error("Ошибка при создании заказа для item_id=%s: %s", item_id_int, e, exc_info=True)
             await call.message.answer(f"Не удалось создать заказ: {e}")
@@ -351,7 +377,7 @@ async def cb_buy_one(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("buy_direct:"))
 async def cb_buy_direct(call: CallbackQuery, state: FSMContext) -> None:
-    await call.answer() # <-- ВАЖНО: Сразу подтверждаем нажатие
+    await call.answer()
     
     _, item_id, _ = call.data.split(":")
     item_id_int = int(item_id)
@@ -362,26 +388,60 @@ async def cb_buy_direct(call: CallbackQuery, state: FSMContext) -> None:
             
             # ====== ОБРАБОТКА БЕСПЛАТНОГО ТОВАРА ======
             if url is None:
-                # TODO: Аналогично cb_buy_one, здесь нужно отправить файл
-                await call.message.answer("✅ Бесплатный товар успешно оформлен! (Здесь должна быть отправка файла)")
+                async with AsyncSessionLocal() as db:
+                    item = (await db.execute(select(Item).where(Item.id == item_id_int))).scalar_one_or_none()
+                    
+                    if not item:
+                        await call.message.answer("❌ Ошибка(
+: товар не найден в базе.")
+                        return
+
+                    # 1. Файл
+                    if item.delivery_type == "file" and item.digital_file_path:
+                        try:
+                            await call.message.answer_document(
+                                FSInputFile(item.digital_file_path), 
+                                caption=f"🎁 Ваш бесплатный файл: {item.title}"
+                            )
+                        except FileNotFoundError:
+                            await call.message.answer("❌ Файл не найден на сервере.")
+                    
+                    # 2. GitHub
+                    elif item.delivery_type == "github" and item.github_repo_read_grant:
+                        await call.message.answer                            f"🎁 Ваш доступ к репозиторию: {item.github_repo_read_grant}"
+                        )
+                    
+                    # 3. Код
+                    else:
+                        code_record = (await db.execute(
+                            select(ItemCode).where(ItemCode.item_id == item.id, ItemCode.is_sold == False).limit(1)
+                        )).scalar_one_or_none()
+                        
+                        if code_record:
+                            code_record.is_sold = True
+                            await db.commit()
+                            await call.message.answer(f"🎁 Ваш код активации:\n`{code_record.code}`", parse_mode="Markdown")
+                        else:
+                            await call.message.answer("✅ Заказ оформлен, но файл/код временно отсутствует. Обратитесь в поддержку.")
+                            
                 await call.answer("Заказ оформлен!", show_alert=True)
-                return
             # ==========================================
 
-            # Платный товар - показываем ссылку
-            try:
-                await call.message.edit_reply_markup(reply_markup=payment_link_kb(url))
-            except TelegramBadRequest as e:
-                if "message is not modified" not in str(e):
-                    try:
-                        if call.message.photo:
-                            await call.message.edit_caption(caption="Перейдите к оплате:", reply_markup=payment_link_kb(url))
-                        else:
-                            await call.message.edit_text("Перейдите к оплате:", reply_markup=payment_link_kb(url))
-                    except Exception:
-                        await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
-            except Exception:
-                await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
+            # Платный товар
+            else:
+                try:
+                    await call.message.edit_reply_markup(reply_markup=payment_link_kb(url))
+                except TelegramBadRequest as e:
+                    if "message is not modified" not in str(e):
+                        try:
+                            if call.message.photo:
+                                await call.message.edit_caption(caption="Перейдите к оплате:", reply_markup=payment_link_kb(url))
+                            else:
+                                await call.message.edit_text("Перейдите к оплате:", reply_markup=payment_link_kb(url))
+                        except Exception:
+                            await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
+                except Exception:
+                    await call.message.answer("Ссылка на оплату:", reply_markup=payment_link_kb(url))
         except Exception as e:
             logger.error("Ошибка при создании заказа для item_id=%s: %s", item_id_int, e, exc_info=True)
             await call.message.answer(f"Не удалось создать заказ: {e}")
@@ -671,7 +731,6 @@ async def show_item(call: CallbackQuery) -> None:
 
 async def list_items(message: Message, item_type: ItemType, section: str = None, call: CallbackQuery = None, page: int = 1, page_size: int = 5) -> None:
     texts = load_texts()
-    from aiogram.exceptions import TelegramBadRequest
 
     async with AsyncSessionLocal() as db:
         base_stmt = select(Item).where(Item.item_type == item_type, Item.is_visible == True)
