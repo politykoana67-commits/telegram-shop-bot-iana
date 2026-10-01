@@ -6,9 +6,8 @@ from app.config import settings
 def main_menu_kb(texts: dict, is_admin: bool = False) -> InlineKeyboardMarkup:
     b = texts["main_menu"]["buttons"]
     row1 = [InlineKeyboardButton(text=b["projects"], callback_data="menu:projects")]
-    row2 = [InlineKeyboardButton(text=b["services"], callback_data="menu:services")]
-    row3 = [InlineKeyboardButton(text=b["purchased"], callback_data="menu:purchased")]
-    rows = [row1, row2, row3]
+    row2 = [InlineKeyboardButton(text=b["purchased"], callback_data="menu:purchased")]
+    rows = [row1, row2]
 
     if settings.show_donate_button:
         rows.append([InlineKeyboardButton(text=b["donate"], callback_data="menu:donate")])
@@ -19,8 +18,6 @@ def main_menu_kb(texts: dict, is_admin: bool = False) -> InlineKeyboardMarkup:
     if settings.show_contact_button:
         if settings.admin_tg_username:
             rows.append([InlineKeyboardButton(text=b["contact"], url=f"https://t.me/{settings.admin_tg_username.lstrip('@')}")])
-        else:
-            rows.append([InlineKeyboardButton(text=b["contact"], callback_data="menu:contact")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
