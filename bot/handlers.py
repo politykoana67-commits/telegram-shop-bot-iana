@@ -386,7 +386,7 @@ async def cb_back(call: CallbackQuery) -> None:
                     else:
                         await call.message.edit_text(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
             except Exception:
-                                       await call await call.message.answer(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+                await call.message.answer(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
                 with contextlib.suppress(Exception):
                     await call.message.delete()
             await call.answer()
@@ -653,7 +653,8 @@ async def list_items(message: Message, item_type: ItemType, section: str = None,
                             raise
                 else:
                     await call.message.answer_photo(photo=photo, caption=description, reply_markup=kb)
-                    with contextlib.supp.message.delete()
+                    with contextlib.suppress(Exception):
+                        await call.message.delete()
             else:
                 if is_photo_message:
                     try:
