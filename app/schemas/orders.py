@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Literal, Optional
 
 
 class CreateOrderRequest(BaseModel):
@@ -11,7 +11,6 @@ class CreateOrderRequest(BaseModel):
     amount_minor: int | None = Field(default=None, description="Сумма в копейках для доната/override")
     
 
-
 class CreateOrderResponse(BaseModel):
     order_id: int | None = None
-    payment_url: str
+    payment_url: Optional[str] = None  # <-- ИСПРАВЛЕНО: теперь может быть None
