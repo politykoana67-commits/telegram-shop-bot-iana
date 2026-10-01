@@ -16,7 +16,7 @@ from aiogram.types import (
 )
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from aiogram.exceptions import TelegramBadRequest  # Для обработки ошибок Telegram
+from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, func
 
 from app.utils.texts import load_texts
@@ -32,7 +32,7 @@ from .keyboards import (
     admin_menu_kb,
 )
 from app.db.session import AsyncSessionLocal
-from app.models import Item, ItemType, User, Purchase, ItemCode  # Добавлен ItemCode
+from app.models import Item, ItemType, User, Purchase, ItemCode
 from app.config import settings
 from app.services.orders_client import OrdersClient
 from app.services.yookassa import YooKassaClient
@@ -270,7 +270,7 @@ async def main_menu_callback(call: CallbackQuery) -> None:
                     with contextlib.suppress(Exception):
                         await call.message.delete()
             except Exception:
-                await call.message.answer_re(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+                await call.message.answer(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
                 with contextlib.suppress(Exception):
                     await call.message.delete()
             await call.answer()
@@ -298,7 +298,7 @@ async def list_pagination(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("buy:"))
 async def cb_buy(call: CallbackQuery) -> None:
     _, item_id = call.data.split(":", 1)
-    await call.message.editply_markup(reply_markup=payment_method_kb(int(item_id)))
+    await call.message.edit_reply_markup(reply_markup=payment_method_kb(int(item_id)))
     await call.answer()
 
 
@@ -392,8 +392,7 @@ async def cb_buy_direct(call: CallbackQuery, state: FSMContext) -> None:
                     item = (await db.execute(select(Item).where(Item.id == item_id_int))).scalar_one_or_none()
                     
                     if not item:
-                        await call.message.answer("❌ Ошибка(
-: товар не найден в базе.")
+                        await call.message.answer("❌ Ошибка: товар не найден в базе.")
                         return
 
                     # 1. Файл
@@ -408,7 +407,8 @@ async def cb_buy_direct(call: CallbackQuery, state: FSMContext) -> None:
                     
                     # 2. GitHub
                     elif item.delivery_type == "github" and item.github_repo_read_grant:
-                        await call.message.answer                            f"🎁 Ваш доступ к репозиторию: {item.github_repo_read_grant}"
+                        await call.message.answer(
+                            f"🎁 Ваш доступ к репозиторию: {item.github_repo_read_grant}"
                         )
                     
                     # 3. Код
