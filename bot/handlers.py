@@ -384,8 +384,7 @@ async def cb_back(call: CallbackQuery) -> None:
                         await call.message.answer_photo(photo=photo, caption=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
                         await call.message.delete()
                     else:
-                        await call.message.edit_text(text=title, reply_markup=InlineKeyboardMarkress(Exceptionup):
-(inline_keyboard=kb))
+                        await call.message.edit_text(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
             except Exception:
                                        await call await call.message.answer(text=title, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
                 with contextlib.suppress(Exception):
