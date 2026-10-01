@@ -316,15 +316,28 @@ async def cb_buy_one(call: CallbackQuery, state: FSMContext) -> None:
             # ====== ОБРАБОТКА БЕСПЛАТНОГО ТОВАРА ======
             if url is None:
                 async with AsyncSessionLocal() as db:
-                    # Получаем товар из базы
                     item = (await db.execute(select(Item).where(Item.id == item_id_int))).scalar_one_or_none()
                     
                     if not item:
                         await call.message.answer("❌ Ошибка: товар не найден в базе.")
                         return
 
-                    # 1. Если это файл
-                    if item.delivery_type == "file" and item.digital_file_path:
+                    # 1. ЕСЛИ ЭТО ССЫЛКА (http...) - ОТПРАВЛЯЕМ ТЕКСТОМ
+                    if item.digital_file_path and item.digital_file_path.startswith("http"):
+                        await call.message.answer(
+                            f"🎁 Ваш материал: {item.title}\n\n"
+                            f"🔗 Ссылка для доступа: {item.digital_file_path}"
+                        )
+                        
+                    # 2. ЕСЛИ ЭТО TELEGRAM FILE_ID (AgAC... или BQAC...) - ОТПРАВЛЯЕМ ФАЙЛ
+                    elif item.digital_file_path and (item.digital_file_path.startswith("AgAC") or item.digital_file_path.startswith("BQAC")):
+                        await call.message.answer_document(
+                            document=item.digital_file_path, 
+                            caption=f"🎁 Ваш бесплатный файл: {item.title}"
+                        )
+                        
+                    # 3. ЕСЛИ ЭТО ЛОКАЛЬНЫЙ ФАЙЛ (например, static/menu/...)
+                    elif item.digital_file_path:
                         try:
                             await call.message.answer_document(
                                 FSInputFile(item.digital_file_path), 
@@ -332,30 +345,24 @@ async def cb_buy_one(call: CallbackQuery, state: FSMContext) -> None:
                             )
                         except FileNotFoundError:
                             await call.message.answer("❌ Файл не найден на сервере. Обратитесь к администратору.")
-                    
-                    # 2. Если это доступ к GitHub
+                        except Exception as e:
+                            logger.error(f"Ошибка отправки файла: {e}", exc_info=True)
+                            await call.message.answer("❌ Ошибка при отправке файла. Обратитесь к администратору.")
+                            
+                    # 4. ЕСЛИ ЭТО ДОСТУП К GITHUB
                     elif item.delivery_type == "github" and item.github_repo_read_grant:
                         await call.message.answer(
                             f"🎁 Ваш доступ к репозиторию: {item.github_repo_read_grant}\n\nНе забудьте принять приглашение в GitHub!"
                         )
-                    
-                    # 3. Если это уникальный код (из таблицы ItemCode)
-                    else:
-                        code_record = (await db.execute(
-                            select(ItemCode).where(ItemCode.item_id == item.id, ItemCode.is_sold == False).limit(1)
-                        )).scalar_one_or_none()
                         
-                        if code_record:
-                            code_record.is_sold = True
-                            await db.commit()
-                            await call.message.answer(f"🎁 Ваш код активации:\n`{code_record.code}`", parse_mode="Markdown")
-                        else:
-                            await call.message.answer("✅ Заказ оформлен, но файл/код временно отсутствует. Обратитесь в поддержку.")
+                    # 5. ЕСЛИ НИЧЕГО НЕ ПОДОШЛО
+                    else:
+                        await call.message.answer("✅ Заказ оформлен, но ссылка/файл временно отсутствует. Обратитесь в поддержку.")
                             
                 await call.answer("Заказ оформлен!", show_alert=True)
             # ==========================================
 
-            # Платный товар - показываем ссылку
+            # Платный товар - показываем ссылку на оплату
             else:
                 try:
                     await call.message.edit_reply_markup(reply_markup=payment_link_kb(url))
@@ -395,39 +402,47 @@ async def cb_buy_direct(call: CallbackQuery, state: FSMContext) -> None:
                         await call.message.answer("❌ Ошибка: товар не найден в базе.")
                         return
 
-                    # 1. Файл
-                    if item.delivery_type == "file" and item.digital_file_path:
+                    # 1. ЕСЛИ ЭТО ССЫЛКА (http...) - ОТПРАВЛЯЕМ ТЕКСТОМ
+                    if item.digital_file_path and item.digital_file_path.startswith("http"):
+                        await call.message.answer(
+                            f"🎁 Ваш материал: {item.title}\n\n"
+                            f"🔗 Ссылка для доступа: {item.digital_file_path}"
+                        )
+                        
+                    # 2. ЕСЛИ ЭТО TELEGRAM FILE_ID (AgAC... или BQAC...) - ОТПРАВЛЯЕМ ФАЙЛ
+                    elif item.digital_file_path and (item.digital_file_path.startswith("AgAC") or item.digital_file_path.startswith("BQAC")):
+                        await call.message.answer_document(
+                            document=item.digital_file_path, 
+                            caption=f"🎁 Ваш бесплатный файл: {item.title}"
+                        )
+                        
+                    # 3. ЕСЛИ ЭТО ЛОКАЛЬНЫЙ ФАЙЛ (например, static/menu/...)
+                    elif item.digital_file_path:
                         try:
                             await call.message.answer_document(
                                 FSInputFile(item.digital_file_path), 
                                 caption=f"🎁 Ваш бесплатный файл: {item.title}"
                             )
                         except FileNotFoundError:
-                            await call.message.answer("❌ Файл не найден на сервере.")
-                    
-                    # 2. GitHub
+                            await call.message.answer("❌ Файл не найден на сервере. Обратитесь к администратору.")
+                        except Exception as e:
+                            logger.error(f"Ошибка отправки файла: {e}", exc_info=True)
+                            await call.message.answer("❌ Ошибка при отправке файла. Обратитесь к администратору.")
+                            
+                    # 4. ЕСЛИ ЭТО ДОСТУП К GITHUB
                     elif item.delivery_type == "github" and item.github_repo_read_grant:
                         await call.message.answer(
-                            f"🎁 Ваш доступ к репозиторию: {item.github_repo_read_grant}"
+                            f"🎁 Ваш доступ к репозиторию: {item.github_repo_read_grant}\n\nНе забудьте принять приглашение в GitHub!"
                         )
-                    
-                    # 3. Код
-                    else:
-                        code_record = (await db.execute(
-                            select(ItemCode).where(ItemCode.item_id == item.id, ItemCode.is_sold == False).limit(1)
-                        )).scalar_one_or_none()
                         
-                        if code_record:
-                            code_record.is_sold = True
-                            await db.commit()
-                            await call.message.answer(f"🎁 Ваш код активации:\n`{code_record.code}`", parse_mode="Markdown")
-                        else:
-                            await call.message.answer("✅ Заказ оформлен, но файл/код временно отсутствует. Обратитесь в поддержку.")
+                    # 5. ЕСЛИ НИЧЕГО НЕ ПОДОШЛО
+                    else:
+                        await call.message.answer("✅ Заказ оформлен, но ссылка/файл временно отсутствует. Обратитесь в поддержку.")
                             
                 await call.answer("Заказ оформлен!", show_alert=True)
             # ==========================================
 
-            # Платный товар
+            # Платный товар - показываем ссылку на оплату
             else:
                 try:
                     await call.message.edit_reply_markup(reply_markup=payment_link_kb(url))
