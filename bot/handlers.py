@@ -61,6 +61,61 @@ def _is_admin_user(tg_id: int | None, username: str | None) -> bool:
     return False
 
 
+# ========== НОВАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ ТОВАРА ==========
+async def send_item_content(message: Message, item: Item):
+    """Универсальная функция отправки товара (ссылка, файл, код, github)"""
+    # 1. Если это ссылка (Google Docs и т.д.)
+    if item.digital_file_path and item.digital_file_path.startswith("http"):
+        await message.answer(
+            f"🎁 Ваш материал: {item.title}\n\n"
+            f"🔗 Ссылка для доступа: {item.digital_file_path}"
+        )
+        return
+
+    # 2. Если это Telegram file_id
+    if item.digital_file_path and (item.digital_file_path.startswith("AgAC") or item.digital_file_path.startswith("BQAC")):
+        await message.answer_document(
+            document=item.digital_file_path, 
+            caption=f"🎁 Ваш файл: {item.title}"
+        )
+        return
+
+    # 3. Если это локальный файл на сервере
+    if item.digital_file_path:
+        try:
+            await message.answer_document(
+                FSInputFile(item.digital_file_path), 
+                caption=f"🎁 Ваш файл: {item.title}"
+            )
+        except FileNotFoundError:
+            await message.answer("❌ Файл не найден на сервере. Обратитесь к администратору.")
+        except Exception as e:
+            logger.error(f"Ошибка отправки файла: {e}", exc_info=True)
+            await message.answer("❌ Ошибка при отправке файла. Обратитесь к администратору.")
+        return
+
+    # 4. Если это доступ к GitHub
+    if item.delivery_type == "github" and item.github_repo_read_grant:
+        await message.answer(
+            f"🎁 Ваш доступ к репозиторию: {item.github_repo_read_grant}\n\nНе забудьте принять приглашение в GitHub!"
+        )
+        return
+
+    # 5. Уникальный код (из таблицы ItemCode)
+    async with AsyncSessionLocal() as db:
+        code_record = (await db.execute(
+            select(ItemCode).where(ItemCode.item_id == item.id, ItemCode.is_sold == False).limit(1)
+        )).scalar_one_or_none()
+        
+        if code_record:
+            code_record.is_sold = True
+            await db.commit()
+            await message.answer(f"🎁 Ваш код активации:\n`{code_record.code}`", parse_mode="Markdown")
+        else:
+            await message.answer("✅ Заказ оформлен, но файл/код временно отсутствует. Обратитесь в поддержку.")
+# =======================================================
+
+
 @router.message(F.text == "/start")
 async def start_handler(message: Message) -> None:
     texts = load_texts()
@@ -309,6 +364,25 @@ async def cb_buy_one(call: CallbackQuery, state: FSMContext) -> None:
     _, item_id = call.data.split(":")
     item_id_int = int(item_id)
     
+    # ПРОВЕРКА: Если товар уже куплен, отправляем его повторно и выходим
+    async with AsyncSessionLocal() as db:
+        item = (await db.execute(select(Item).where(Item.id == item_id_int))).scalar_one_or_none()
+        if not item:
+            await call.message.answer("❌ Товар не найден.")
+            return
+            
+        user = (await db.execute(select(User).where(User.tg_id == call.from_user.id))).scalar_one_or_none()
+        if user:
+            purchased = (await db.execute(
+                select(Purchase).where(Purchase.user_id == user.id, Purchase.item_id == item.id)
+            )).first() is not None
+            
+            if purchased:
+                await send_item_content(call.message, item)
+                await call.answer("Материал отправлен повторно!", show_alert=True)
+                return
+    
+    # Если не куплено, создаем заказ
     async with OrdersClient() as client:
         try:
             url = await client.create_order(item_id_int, call.from_user.id)
@@ -317,48 +391,8 @@ async def cb_buy_one(call: CallbackQuery, state: FSMContext) -> None:
             if url is None:
                 async with AsyncSessionLocal() as db:
                     item = (await db.execute(select(Item).where(Item.id == item_id_int))).scalar_one_or_none()
-                    
-                    if not item:
-                        await call.message.answer("❌ Ошибка: товар не найден в базе.")
-                        return
-
-                    # 1. ЕСЛИ ЭТО ССЫЛКА (http...) - ОТПРАВЛЯЕМ ТЕКСТОМ
-                    if item.digital_file_path and item.digital_file_path.startswith("http"):
-                        await call.message.answer(
-                            f"🎁 Ваш материал: {item.title}\n\n"
-                            f"🔗 Ссылка для доступа: {item.digital_file_path}"
-                        )
-                        
-                    # 2. ЕСЛИ ЭТО TELEGRAM FILE_ID (AgAC... или BQAC...) - ОТПРАВЛЯЕМ ФАЙЛ
-                    elif item.digital_file_path and (item.digital_file_path.startswith("AgAC") or item.digital_file_path.startswith("BQAC")):
-                        await call.message.answer_document(
-                            document=item.digital_file_path, 
-                            caption=f"🎁 Ваш бесплатный файл: {item.title}"
-                        )
-                        
-                    # 3. ЕСЛИ ЭТО ЛОКАЛЬНЫЙ ФАЙЛ (например, static/menu/...)
-                    elif item.digital_file_path:
-                        try:
-                            await call.message.answer_document(
-                                FSInputFile(item.digital_file_path), 
-                                caption=f"🎁 Ваш бесплатный файл: {item.title}"
-                            )
-                        except FileNotFoundError:
-                            await call.message.answer("❌ Файл не найден на сервере. Обратитесь к администратору.")
-                        except Exception as e:
-                            logger.error(f"Ошибка отправки файла: {e}", exc_info=True)
-                            await call.message.answer("❌ Ошибка при отправке файла. Обратитесь к администратору.")
-                            
-                    # 4. ЕСЛИ ЭТО ДОСТУП К GITHUB
-                    elif item.delivery_type == "github" and item.github_repo_read_grant:
-                        await call.message.answer(
-                            f"🎁 Ваш доступ к репозиторию: {item.github_repo_read_grant}\n\nНе забудьте принять приглашение в GitHub!"
-                        )
-                        
-                    # 5. ЕСЛИ НИЧЕГО НЕ ПОДОШЛО
-                    else:
-                        await call.message.answer("✅ Заказ оформлен, но ссылка/файл временно отсутствует. Обратитесь в поддержку.")
-                            
+                    if item:
+                        await send_item_content(call.message, item)
                 await call.answer("Заказ оформлен!", show_alert=True)
             # ==========================================
 
@@ -389,6 +423,24 @@ async def cb_buy_direct(call: CallbackQuery, state: FSMContext) -> None:
     _, item_id, _ = call.data.split(":")
     item_id_int = int(item_id)
     
+    # ПРОВЕРКА: Если товар уже куплен, отправляем его повторно и выходим
+    async with AsyncSessionLocal() as db:
+        item = (await db.execute(select(Item).where(Item.id == item_id_int))).scalar_one_or_none()
+        if not item:
+            await call.message.answer("❌ Товар не найден.")
+            return
+            
+        user = (await db.execute(select(User).where(User.tg_id == call.from_user.id))).scalar_one_or_none()
+        if user:
+            purchased = (await db.execute(
+                select(Purchase).where(Purchase.user_id == user.id, Purchase.item_id == item.id)
+            )).first() is not None
+            
+            if purchased:
+                await send_item_content(call.message, item)
+                await call.answer("Материал отправлен повторно!", show_alert=True)
+                return
+    
     async with OrdersClient() as client:
         try:
             url = await client.create_order(item_id_int, call.from_user.id)
@@ -397,48 +449,8 @@ async def cb_buy_direct(call: CallbackQuery, state: FSMContext) -> None:
             if url is None:
                 async with AsyncSessionLocal() as db:
                     item = (await db.execute(select(Item).where(Item.id == item_id_int))).scalar_one_or_none()
-                    
-                    if not item:
-                        await call.message.answer("❌ Ошибка: товар не найден в базе.")
-                        return
-
-                    # 1. ЕСЛИ ЭТО ССЫЛКА (http...) - ОТПРАВЛЯЕМ ТЕКСТОМ
-                    if item.digital_file_path and item.digital_file_path.startswith("http"):
-                        await call.message.answer(
-                            f"🎁 Ваш материал: {item.title}\n\n"
-                            f"🔗 Ссылка для доступа: {item.digital_file_path}"
-                        )
-                        
-                    # 2. ЕСЛИ ЭТО TELEGRAM FILE_ID (AgAC... или BQAC...) - ОТПРАВЛЯЕМ ФАЙЛ
-                    elif item.digital_file_path and (item.digital_file_path.startswith("AgAC") or item.digital_file_path.startswith("BQAC")):
-                        await call.message.answer_document(
-                            document=item.digital_file_path, 
-                            caption=f"🎁 Ваш бесплатный файл: {item.title}"
-                        )
-                        
-                    # 3. ЕСЛИ ЭТО ЛОКАЛЬНЫЙ ФАЙЛ (например, static/menu/...)
-                    elif item.digital_file_path:
-                        try:
-                            await call.message.answer_document(
-                                FSInputFile(item.digital_file_path), 
-                                caption=f"🎁 Ваш бесплатный файл: {item.title}"
-                            )
-                        except FileNotFoundError:
-                            await call.message.answer("❌ Файл не найден на сервере. Обратитесь к администратору.")
-                        except Exception as e:
-                            logger.error(f"Ошибка отправки файла: {e}", exc_info=True)
-                            await call.message.answer("❌ Ошибка при отправке файла. Обратитесь к администратору.")
-                            
-                    # 4. ЕСЛИ ЭТО ДОСТУП К GITHUB
-                    elif item.delivery_type == "github" and item.github_repo_read_grant:
-                        await call.message.answer(
-                            f"🎁 Ваш доступ к репозиторию: {item.github_repo_read_grant}\n\nНе забудьте принять приглашение в GitHub!"
-                        )
-                        
-                    # 5. ЕСЛИ НИЧЕГО НЕ ПОДОШЛО
-                    else:
-                        await call.message.answer("✅ Заказ оформлен, но ссылка/файл временно отсутствует. Обратитесь в поддержку.")
-                            
+                    if item:
+                        await send_item_content(call.message, item)
                 await call.answer("Заказ оформлен!", show_alert=True)
             # ==========================================
 
@@ -734,7 +746,7 @@ async def show_item(call: CallbackQuery) -> None:
                 logger.info("Карточка показана (edit_text), id=%s", item.id)
         except TelegramBadRequest as e:
             if "message is not modified" in str(e):
-                pass # Игнорируем, если сообщение не изменилось
+                pass
             else:
                 logger.error(f"Ошибка при показе карточки товара: {e}", exc_info=True)
                 await call.answer("Ошибка при показе карточки товара", show_alert=True)
