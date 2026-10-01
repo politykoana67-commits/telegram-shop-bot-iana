@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.db.session import get_db_session
-from app.models import Item, Order, PaymentMethod, User, OrderStatus
+from app.models import Item, Order, PaymentMethod, User, OrderStatus, Purchase  # <-- Добавлен Purchase
 from app.schemas.orders import CreateOrderRequest, CreateOrderResponse
 from app.services.yookassa import YooKassaClient
 from app.config import settings
@@ -59,26 +59,30 @@ async def create_order(payload: CreateOrderRequest, db: AsyncSession = Depends(g
         key = "service" if item.item_type.value == "service" else "digital"
         description = (templates.get(key) or "Оплата: {title} | Заказ {order_id}").format(title=item.title, order_id=order.id)
 
-    # ====== НАЧАЛО ИЗМЕНЕНИЙ ======
+    # ====== ЛОГИКА ДЛЯ БЕСПЛАТНЫХ ТОВАРОВ ======
     payment_amount_minor = amount_minor if 'amount_minor' in locals() else (order.amount_minor if 'order' in locals() else 0)
     payment_id_str = (str(order.id) if not is_donation else f"donation:{payload.tg_id or 'anon'}")
 
-    # Если сумма 0 — не идем в ЮKassa, а сразу выдаем товар
     if payment_amount_minor == 0:
         if is_donation:
             raise HTTPException(status_code=400, detail="Сумма доната должна быть больше 0")
         
         logger.bind(event="order.free").info(f"Оформление бесплатного заказа {order.id} для item_id={item.id}")
         
-        # Обновляем статус заказа. ВАЖНО: Убедитесь, что в вашей модели OrderStatus есть статус PAID.
-        # Если он называется иначе (например, COMPLETED или SUCCESS), замените здесь.
+        # Обновляем статус заказа на PAID
         order.status = OrderStatus.PAID 
+        await db.flush() # Чтобы получить order.id
+        
+        # Создаем запись о покупке, чтобы товар появился в разделе "Мои покупки"
+        # ВАЖНО: Убедитесь, что в вашей модели Purchase есть поля user_id и item_id. 
+        # Если есть другие обязательные поля (например, price), добавьте их сюда.
+        purchase = Purchase(user_id=user_id, item_id=item.id)
+        db.add(purchase)
         await db.commit()
         
-        # Возвращаем ответ без ссылки на оплату. 
-        # Бот должен проверить payment_url is None и сразу выдать файл пользователю!
+        # Возвращаем ответ без ссылки на оплату. Бот сам поймет, что нужно выдать файл.
         return CreateOrderResponse(order_id=order.id, payment_url=None)
-    # ====== КОНЕЦ ИЗМЕНЕНИЙ ======
+    # ==========================================
 
     logger.bind(event="yk.create_payment.request").info(
         "Готовим платеж в ЮKassa: сумма={amount} ₽",
@@ -94,7 +98,6 @@ async def create_order(payload: CreateOrderRequest, db: AsyncSession = Depends(g
         elif payload.payment_method == PaymentMethod.SBP_QR.value:
             pm_type = "sbp"
 
-        # Для идемпотентности используем UUID, чтобы избежать коллизий при повторных попытках
         import uuid
         idem = str(uuid.uuid4())
         data = await client.create_payment(
@@ -108,8 +111,9 @@ async def create_order(payload: CreateOrderRequest, db: AsyncSession = Depends(g
         )
     except Exception as e:
         logger.bind(event="yk.create_payment.error", error=str(e)).error("Ошибка запроса к ЮKassa")
-        # Меняем 502 на 400, так как проблема обычно в неверных данных запроса, а не в сервере ЮKassa
+        # Возвращаем 400, чтобы бот показал понятную ошибку, а не 502
         raise HTTPException(status_code=400, detail=f"Ошибка платежной системы: {str(e)}")
+    
     try:
         confirmation = (data or {}).get("confirmation", {})
         payment_url = confirmation.get("confirmation_url")
@@ -117,15 +121,13 @@ async def create_order(payload: CreateOrderRequest, db: AsyncSession = Depends(g
         if not payment_url:
             raise HTTPException(status_code=400, detail="YK did not return confirmation_url")
         if not is_donation:
-            # Сохраняем id платежа и ссылку для покупок
             try:
-                order.fk_order_id = data.get("id")  # type: ignore[arg-type]
+                order.fk_order_id = data.get("id")
             except Exception:
                 pass
             order.fk_payment_url = payment_url
             order.status = OrderStatus.PENDING
             await db.commit()
-        # Донаты: уведомление админу отправляется ТОЛЬКО по вебхуку YooKassa
         return CreateOrderResponse(order_id=(None if is_donation else order.id), payment_url=payment_url)
     finally:
         await client.close()
