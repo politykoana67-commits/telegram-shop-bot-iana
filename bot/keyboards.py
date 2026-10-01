@@ -53,10 +53,13 @@ def item_card_kb(item_id: int, item_type: str, purchased: bool = False, from_pur
     texts = load_texts()
     rows = []
     back_cb = "back:purchased" if from_purchased else f"back:list:{item_type}:{page}"
+    
     if not purchased or item_type == "service":
         rows.append([InlineKeyboardButton(text=texts["buttons"].get("buy", "Купить"), callback_data=f"buy_one:{item_id}")])
     else:
-        rows.append([InlineKeyboardButton(text="✅ Уже куплено", callback_data=back_cb)])
+        # ИСПРАВЛЕНИЕ: Теперь "Уже куплено" вызывает повторную отправку файла
+        rows.append([InlineKeyboardButton(text="✅ Уже куплено", callback_data=f"buy_one:{item_id}")])
+        
     rows.append([InlineKeyboardButton(text=texts["buttons"]["back"], callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
