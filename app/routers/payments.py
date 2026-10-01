@@ -11,12 +11,12 @@ from app.services.delivery import DeliveryService
 from app.utils.texts import load_texts
 from app.services.yookassa import verify_webhook_basic, is_trusted_yookassa_ip, YooKassaClient
 from app.services.nalogo_client import send_income as nalogo_send_income
+from loguru import logger
 
 router = APIRouter(prefix="/payments", tags=["payments"]) 
 
 
 def get_bot() -> Bot:
-    # Используем общий экземпляр бота, чтобы не открывать/не закрывать сессии на каждый запрос
     return global_bot
 
 
@@ -32,27 +32,22 @@ async def yookassa_webhook(
         raise HTTPException(status_code=401, detail="unauthorized")
 
     payload = await request.json()
-    # Опциональная проверка IP (усиление безопасности)
     try:
         peer = request.client.host if request.client else None
     except Exception:
         peer = None
     if peer and not is_trusted_yookassa_ip(peer):
-        # Не блокируем, просто пишем краткий лог
-        from loguru import logger
         logger.bind(event="yk.webhook").info("Webhook ЮKassa от IP вне списка доверенных: {ip}", ip=peer)
 
-    # Webhook формата YooKassa: {event, object:{id,status,amount,metadata,...}}
     obj = payload.get("object", {}) if isinstance(payload, dict) else {}
     event = payload.get("event") if isinstance(payload, dict) else None
     metadata = obj.get("metadata", {}) if isinstance(obj, dict) else {}
     status = obj.get("status")
 
-    # Нас интересует только успешная оплата
     if not (event == "payment.succeeded" and status == "succeeded"):
         return {"ok": True}
 
-    # Донаты: нет orderId, обрабатываем отдельно
+    # Донаты
     donation_raw = metadata.get("donation")
     donation_flag = False
     if isinstance(donation_raw, bool):
@@ -60,7 +55,6 @@ async def yookassa_webhook(
     elif isinstance(donation_raw, str):
         donation_flag = donation_raw.strip().lower() in {"true", "1", "yes"}
     if donation_flag:
-        # Отправка чека ФНС для доната (если включено) + запись в БД
         try:
             amount_value = (obj.get("amount", {}) or {}).get("value")
             buyer_tg_id = metadata.get("buyer_tg_id")
@@ -68,7 +62,6 @@ async def yookassa_webhook(
                 buyer_tg_id_int = int(buyer_tg_id) if buyer_tg_id is not None and str(buyer_tg_id).isdigit() else None
             except Exception:
                 buyer_tg_id_int = None
-            # Преобразуем сумму в minor (копейки)
             from decimal import Decimal, ROUND_HALF_UP
             amount_minor = int((Decimal(str(amount_value or "0")) * Decimal(100)).quantize(0, rounding=ROUND_HALF_UP))
             rec = Receipt(
@@ -96,7 +89,7 @@ async def yookassa_webhook(
             await db.commit()
         except Exception:
             pass
-        # Уведомление админа
+        
         if settings.admin_chat_id:
             try:
                 amount_value = (obj.get("amount", {}) or {}).get("value")
@@ -121,7 +114,7 @@ async def yookassa_webhook(
                 pass
         return {"ok": True}
 
-    # Счета, созданные вручную администратором (без orderId)
+    # Админ-счета
     admin_invoice_raw = metadata.get("admin_invoice")
     admin_invoice_flag = False
     if isinstance(admin_invoice_raw, bool):
@@ -143,7 +136,7 @@ async def yookassa_webhook(
                 pass
         return {"ok": True}
 
-    # Покупки: ожидаем наличие paymentId и работаем с заказом
+    # Покупки
     payment_id = metadata.get("paymentId")
     if not payment_id:
         raise HTTPException(status_code=400, detail="paymentId missing")
@@ -152,7 +145,6 @@ async def yookassa_webhook(
     if not order:
         raise HTTPException(status_code=404, detail="order not found")
 
-    # Идемпотентность: если уже paid — просто 200 OK
     if order.status == OrderStatus.PAID:
         return {"ok": True}
 
@@ -163,7 +155,6 @@ async def yookassa_webhook(
         purchase = Purchase(order_id=order.id, user_id=order.user_id, item_id=item.id, delivery_info=None)
         db.add(purchase)
 
-        # Попытка выдать текстовый код, если есть в наличии
         allocated_code: str | None = None
         if item.item_type == ItemType.DIGITAL and item.delivery_type == 'codes':
             code_row = (await db.execute(
@@ -178,18 +169,25 @@ async def yookassa_webhook(
             delivery = DeliveryService(bot)
             try:
                 if allocated_code:
-                    # Отправляем код жирным (HTML)
                     text = f"<b>{allocated_code}</b>"
                     await bot.send_message(int(order.buyer_tg_id), text, reply_markup=None, parse_mode="HTML")
                     await delivery.deliver(int(order.buyer_tg_id), item)
                 else:
-                    await delivery.deliver(int(order.buyer_tg_id), item)
-            except Exception:
-                pass
+                    # === НОВАЯ ЛОГИКА: Если это ссылка, отправляем текстом ===
+                    if item.digital_file_path and item.digital_file_path.startswith("http"):
+                        await bot.send_message(
+                            int(order.buyer_tg_id),
+                            f"🎁 Ваш материал: {item.title}\n\n🔗 Ссылка для доступа: {item.digital_file_path}"
+                        )
+                    else:
+                        await delivery.deliver(int(order.buyer_tg_id), item)
+                    # ====================================================
+            except Exception as e:
+                logger.error(f"Ошибка при выдаче товара после оплаты: {e}", exc_info=True)
 
     await db.commit()
 
-    # Отправка чека ФНС (если включено) + запись в БД
+    # Чек ФНС
     try:
         buyer_tg_id_int = None
         if order.buyer_tg_id:
@@ -224,6 +222,7 @@ async def yookassa_webhook(
     except Exception:
         pass
 
+    # Уведомление админа
     if settings.admin_chat_id:
         try:
             texts = load_texts().get("notifications", {})
