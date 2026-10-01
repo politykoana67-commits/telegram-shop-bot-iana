@@ -59,21 +59,27 @@ async def create_order(payload: CreateOrderRequest, db: AsyncSession = Depends(g
         key = "service" if item.item_type.value == "service" else "digital"
         description = (templates.get(key) or "Оплата: {title} | Заказ {order_id}").format(title=item.title, order_id=order.id)
 
-    # YooKassa: создаем платёж и получаем confirmation_url
-
-    def _mask_email(value: str | None) -> str | None:
-        if not value:
-            return value
-        try:
-            name, domain = value.split("@", 1)
-            if len(name) <= 2:
-                return "*@" + domain
-            return name[:2] + "***@" + domain
-        except Exception:
-            return "***"
-
+    # ====== НАЧАЛО ИЗМЕНЕНИЙ ======
     payment_amount_minor = amount_minor if 'amount_minor' in locals() else (order.amount_minor if 'order' in locals() else 0)
     payment_id_str = (str(order.id) if not is_donation else f"donation:{payload.tg_id or 'anon'}")
+
+    # Если сумма 0 — не идем в ЮKassa, а сразу выдаем товар
+    if payment_amount_minor == 0:
+        if is_donation:
+            raise HTTPException(status_code=400, detail="Сумма доната должна быть больше 0")
+        
+        logger.bind(event="order.free").info(f"Оформление бесплатного заказа {order.id} для item_id={item.id}")
+        
+        # Обновляем статус заказа. ВАЖНО: Убедитесь, что в вашей модели OrderStatus есть статус PAID.
+        # Если он называется иначе (например, COMPLETED или SUCCESS), замените здесь.
+        order.status = OrderStatus.PAID 
+        await db.commit()
+        
+        # Возвращаем ответ без ссылки на оплату. 
+        # Бот должен проверить payment_url is None и сразу выдать файл пользователю!
+        return CreateOrderResponse(order_id=order.id, payment_url=None)
+    # ====== КОНЕЦ ИЗМЕНЕНИЙ ======
+
     logger.bind(event="yk.create_payment.request").info(
         "Готовим платеж в ЮKassa: сумма={amount} ₽",
         amount=f"{payment_amount_minor/100:.2f}",
@@ -102,13 +108,14 @@ async def create_order(payload: CreateOrderRequest, db: AsyncSession = Depends(g
         )
     except Exception as e:
         logger.bind(event="yk.create_payment.error", error=str(e)).error("Ошибка запроса к ЮKassa")
-        raise HTTPException(status_code=502, detail="YK request error")
+        # Меняем 502 на 400, так как проблема обычно в неверных данных запроса, а не в сервере ЮKassa
+        raise HTTPException(status_code=400, detail=f"Ошибка платежной системы: {str(e)}")
     try:
         confirmation = (data or {}).get("confirmation", {})
         payment_url = confirmation.get("confirmation_url")
         logger.bind(event="yk.create_payment.response").info("Ссылка на оплату получена")
         if not payment_url:
-            raise HTTPException(status_code=502, detail="YK did not return confirmation_url")
+            raise HTTPException(status_code=400, detail="YK did not return confirmation_url")
         if not is_donation:
             # Сохраняем id платежа и ссылку для покупок
             try:
