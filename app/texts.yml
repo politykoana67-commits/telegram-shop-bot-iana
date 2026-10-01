@@ -4,33 +4,31 @@ buttons:
   main_menu: "🏠 Главное меню"
 
 main_menu:
-  title: "📚 Яна Александровна | Твоя физичка"
-  image: "static/menu/IMG_9353 2.jpg"
+  title: "📚 Педагог на автопилоте"
   buttons:
     projects: "📖 Мои материалы"
-    services: "🛍 Купить"
     purchased: "📦 Мои покупки"
     donate: "💛 Поддержать автора"
     contact: "💬 Связаться"
     admin: "🛠 Администрирование"
-
   section_descriptions:
     projects: "📖 Готовые материалы для учителей и преподавателей"
-    services: "🛍 Выберите материал и оплатите — файл придёт сразу после оплаты"
-    purchased: "📦 Все ваши покупки — здесь. Скачать можно в любой момент"
+
+defaults:
+  images:
+    digital: "static/menu/projects.png"
 
 payment:
   title: "Оплата"
   buttons:
     pay: "💳 Перейти к оплате"
   description_templates:
-    service: "Оплата: {title} | Заказ {order_id}"
     digital: "Оплата: {title} | Заказ {order_id}"
     donation: "Поддержка автора"
 
 empty:
   items: "📚 Материалы скоро появятся — заглядывайте!"
-  purchased: "📦 У вас пока нет покупок. Загляните в раздел «Купить»"
+  purchased: "📦 У вас пока нет покупок."
   service: "🛍 Скоро здесь появятся новые материалы"
 
 donate:
@@ -55,7 +53,6 @@ contact:
     Если у вас есть вопросы по материалам или вы хотите поделиться обратной связью — напишите мне.
 
     📩 Telegram: @IanaAlex
-    📧 Email: gorbushina.iana@ya.ru
   buttons:
     back: "⬅ Назад"
 
